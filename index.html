@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#141210">
+<title>Film2Positive</title>
+<style>
+  :root{
+    --bg:#141210; --panel:#1f1c18; --panel2:#282420; --line:#3a352e;
+    --text:#f0ebe2; --dim:#a89f90; --accent:#e8842c; --accent2:#f4a852;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0; padding:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}
+  body{padding:env(safe-area-inset-top) env(safe-area-inset-right) calc(96px + env(safe-area-inset-bottom)) env(safe-area-inset-left);}
+  header{padding:18px 16px 6px; display:flex; align-items:baseline; gap:10px;}
+  header h1{font-size:20px; margin:0; letter-spacing:.5px;}
+  header h1 span{color:var(--accent);}
+  header small{color:var(--dim); font-size:12px;}
+  .wrap{padding:0 12px; max-width:720px; margin:0 auto;}
+
+  .pickzone{margin:12px 0; border:1.5px dashed var(--line); border-radius:16px;
+    padding:26px 16px; text-align:center; background:var(--panel);}
+  .pickzone p{margin:10px 0 0; color:var(--dim); font-size:13px; line-height:1.5;}
+  .btn{display:inline-block; border:none; border-radius:12px; padding:13px 22px;
+    font-size:16px; font-weight:600; background:var(--accent); color:#1a1206; cursor:pointer;}
+  .btn:active{transform:scale(.97);}
+  .btn.ghost{background:var(--panel2); color:var(--text); border:1px solid var(--line);}
+  .btn.small{padding:8px 14px; font-size:13px; border-radius:9px;}
+
+  .controls{background:var(--panel); border:1px solid var(--line); border-radius:16px;
+    padding:14px 16px 6px; margin:12px 0; display:none;}
+  .controls h2{font-size:12px; text-transform:uppercase; letter-spacing:1.2px;
+    color:var(--dim); margin:0 0 4px; font-weight:600;}
+  .ctl{display:grid; grid-template-columns:86px 1fr 44px; align-items:center;
+    gap:10px; padding:7px 0;}
+  .ctl label{font-size:13px; color:var(--text);}
+  .ctl output{font-size:12px; color:var(--accent2); text-align:right; font-variant-numeric:tabular-nums;}
+  input[type=range]{-webkit-appearance:none; width:100%; height:26px; background:transparent;}
+  input[type=range]::-webkit-slider-runnable-track{height:4px; border-radius:2px; background:var(--line);}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none; width:22px; height:22px;
+    border-radius:50%; background:var(--accent); margin-top:-9px; border:2.5px solid var(--bg);}
+  .ctl-foot{display:flex; gap:8px; padding:8px 0 10px;}
+
+  .cards{display:flex; flex-direction:column; gap:14px; margin:14px 0;}
+  .card{background:var(--panel); border:1px solid var(--line); border-radius:16px; overflow:hidden;}
+  .card .imgbox{position:relative; background:#000; min-height:120px;}
+  .card img{display:block; width:100%; height:auto;}
+  .card .tag{position:absolute; top:10px; left:10px; font-size:11px; font-weight:700;
+    letter-spacing:1px; padding:4px 9px; border-radius:7px; background:rgba(0,0,0,.55);
+    color:var(--accent2); backdrop-filter:blur(4px);}
+  .card .row{display:flex; align-items:center; gap:8px; padding:10px 12px;}
+  .card .name{flex:1; font-size:12px; color:var(--dim); overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap;}
+  .spin{position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+    color:var(--dim); font-size:13px;}
+
+  .dock{position:fixed; left:0; right:0; bottom:0; display:none; gap:10px;
+    padding:12px 16px calc(12px + env(safe-area-inset-bottom));
+    background:rgba(20,18,16,.92); backdrop-filter:blur(12px); border-top:1px solid var(--line);}
+  .dock .btn{flex:1; text-align:center;}
+  .hint{color:var(--dim); font-size:12px; line-height:1.55; margin:14px 4px 4px;}
+</style>
+</head>
+<body>
+<header><h1>Film<span>2</span>Positive</h1><small>C-41 negative &rarr; photo</small></header>
+<div class="wrap">
+
+  <div class="pickzone" id="pickzone">
+    <button class="btn" id="pickBtn">Choose negatives</button>
+    <p>Pick your DigitaLIZA&nbsp;Max shots from the photo library.<br>
+       Everything is converted on your phone &mdash; nothing is uploaded.</p>
+    <input type="file" id="fileInput" accept="image/*" multiple hidden>
+  </div>
+
+  <div class="controls" id="controls">
+    <h2>Develop settings</h2>
+    <div class="ctl"><label>Exposure</label>
+      <input type="range" id="exposure" min="-2" max="2" step="0.1" value="0"><output>0.0</output></div>
+    <div class="ctl"><label>Contrast</label>
+      <input type="range" id="printRange" min="1.2" max="3" step="0.05" value="2"><output>2.00</output></div>
+    <div class="ctl"><label>Punch</label>
+      <input type="range" id="scurve" min="0" max="1" step="0.05" value="0.25"><output>0.25</output></div>
+    <div class="ctl"><label>Saturation</label>
+      <input type="range" id="saturation" min="0" max="2" step="0.05" value="1.15"><output>1.15</output></div>
+    <div class="ctl"><label>Edge crop</label>
+      <input type="range" id="crop" min="0" max="0.2" step="0.005" value="0"><output>0%</output></div>
+    <div class="ctl-foot">
+      <button class="btn ghost small" id="resetBtn">Reset</button>
+    </div>
+  </div>
+
+  <div class="cards" id="cards"></div>
+
+  <p class="hint" id="hint" style="display:none">
+    Tap a photo to compare with the original negative. <b>Save</b> writes a JPEG
+    (in Safari it lands in Downloads/Files; you can also long-press the image and
+    &ldquo;Add to Photos&rdquo;). Include a sliver of blank orange film edge in your
+    shots &mdash; it anchors the color correction. Tip: open this file in Safari and use
+    Share&nbsp;&rarr;&nbsp;Add&nbsp;to&nbsp;Home&nbsp;Screen to install it as an app.
+  </p>
+</div>
+
+<div class="dock" id="dock">
+  <button class="btn ghost" id="addBtn">Add more</button>
+  <button class="btn" id="saveAllBtn">Save all</button>
+</div>
+
+<script>
+"use strict";
+/* ---------------- color math ---------------- */
+const S2L = new Float32Array(256);
+for (let v = 0; v < 256; v++) {
+  const x = v / 255;
+  S2L[v] = x <= 0.04045 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
+}
+const l2s = x => {
+  x = Math.min(1, Math.max(0, x));
+  return x <= 0.0031308 ? x * 12.92 : 1.055 * Math.pow(x, 1 / 2.4) - 0.055;
+};
+const percentile = (sorted, p) => {
+  if (!sorted.length) return 0;
+  const i = (sorted.length - 1) * p / 100, lo = Math.floor(i), hi = Math.ceil(i);
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (i - lo);
+};
+
+/* Analyze a downsampled copy; build one 256-entry output LUT per channel.
+   Pipeline: linearize -> /base (orange mask) -> log density -> per-channel
+   percentile stretch (excluding crush-floor pixels) -> print emulation ->
+   S-curve. Saturation is applied cross-channel afterwards. */
+function computeMaps(smallData, P) {
+  const n = smallData.length >> 2;
+  const CRUSH = S2L[2], BLACK_CLIP = 0.5, WHITE_CLIP = 0.5;
+  const maps = [];
+  for (let c = 0; c < 3; c++) {
+    const lin = new Float32Array(n);
+    for (let i = 0; i < n; i++) lin[i] = S2L[smallData[(i << 2) + c]];
+    const sorted = Float32Array.from(lin).sort();
+    const base = Math.max(1e-4, percentile(sorted, 99.5));
+    // densities of non-crushed pixels
+    const dv = [];
+    for (let i = 0; i < n; i++)
+      if (lin[i] > CRUSH) dv.push(-Math.log10(Math.max(lin[i] / base, 1e-4)));
+    const ds = dv.length >= 100 ? Float64Array.from(dv).sort() :
+      Float64Array.from(lin, x => -Math.log10(Math.max(x / base, 1e-4))).sort();
+    const lo = percentile(ds, BLACK_CLIP);
+    const hi = Math.max(lo + 1e-3, percentile(ds, 100 - WHITE_CLIP));
+    const map = new Uint8Array(256);
+    for (let v = 0; v < 256; v++) {
+      const d = -Math.log10(Math.max(S2L[v] / base, 1e-4));
+      const pos = Math.min(1, Math.max(0, (d - lo) / (hi - lo)));
+      let outLin = Math.pow(10, -P.printRange * (1 - pos)) * Math.pow(2, P.exposure);
+      let s = l2s(outLin);
+      const sm = s * s * (3 - 2 * s);            // smoothstep S-curve
+      s = s * (1 - P.scurve) + sm * P.scurve;
+      map[v] = Math.round(s * 255);
+    }
+    maps.push(map);
+  }
+  return maps;
+}
+
+function applyMaps(data, maps, sat) {
+  const [mr, mg, mb] = maps;
+  for (let i = 0; i < data.length; i += 4) {
+    let r = mr[data[i]], g = mg[data[i + 1]], b = mb[data[i + 2]];
+    if (sat !== 1) {
+      const gray = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      r = gray + (r - gray) * sat; g = gray + (g - gray) * sat; b = gray + (b - gray) * sat;
+    }
+    data[i] = r; data[i + 1] = g; data[i + 2] = b;
+  }
+}
+
+/* draw bitmap (optionally edge-cropped) into a canvas capped at maxDim */
+function drawCapped(bmp, cropFrac, maxDim) {
+  const sx = Math.round(bmp.width * cropFrac), sy = Math.round(bmp.height * cropFrac);
+  const sw = bmp.width - 2 * sx, sh = bmp.height - 2 * sy;
+  const scale = Math.min(1, maxDim / Math.max(sw, sh));
+  const cv = document.createElement("canvas");
+  cv.width = Math.max(1, Math.round(sw * scale));
+  cv.height = Math.max(1, Math.round(sh * scale));
+  cv.getContext("2d", { willReadFrequently: true })
+    .drawImage(bmp, sx, sy, sw, sh, 0, 0, cv.width, cv.height);
+  return cv;
+}
+
+function convert(bmp, P, maxDim) {
+  const cv = drawCapped(bmp, P.crop, maxDim);
+  const ctx = cv.getContext("2d", { willReadFrequently: true });
+  const img = ctx.getImageData(0, 0, cv.width, cv.height);
+  // stats from a ~500px copy (noise-averaged)
+  const smallCv = drawCapped(bmp, P.crop, 500 * Math.max(cv.width, cv.height) / Math.min(cv.width, cv.height));
+  const small = smallCv.getContext("2d", { willReadFrequently: true })
+    .getImageData(0, 0, smallCv.width, smallCv.height).data;
+  const maps = computeMaps(small, P);
+  applyMaps(img.data, maps, P.saturation);
+  ctx.putImageData(img, 0, 0);
+  return cv;
+}
+
+/* ---------------- app state / UI ---------------- */
+const $ = id => document.getElementById(id);
+const items = [];           // {name, bmp, url, imgEl, tagEl, showingNeg, negUrl}
+const params = () => ({
+  exposure: +$("exposure").value, printRange: +$("printRange").value,
+  scurve: +$("scurve").value, saturation: +$("saturation").value, crop: +$("crop").value,
+});
+const PREVIEW_DIM = 1400, FULL_DIM = 4096;
+
+$("pickBtn").onclick = () => $("fileInput").click();
+$("addBtn").onclick = () => $("fileInput").click();
+$("resetBtn").onclick = () => {
+  const d = { exposure: 0, printRange: 2, scurve: 0.25, saturation: 1.15, crop: 0 };
+  for (const k in d) { $(k).value = d[k]; syncOutput($(k)); }
+  redevelopAll();
+};
+
+function syncOutput(input) {
+  const out = input.parentElement.querySelector("output");
+  if (input.id === "crop") out.textContent = Math.round(input.value * 100) + "%";
+  else out.textContent = (+input.value).toFixed(2).replace(/0$/, "");
+}
+for (const id of ["exposure", "printRange", "scurve", "saturation", "crop"]) {
+  $(id).addEventListener("input", () => syncOutput($(id)));
+  $(id).addEventListener("change", redevelopAll);
+}
+
+$("fileInput").addEventListener("change", async e => {
+  const files = [...e.target.files];
+  e.target.value = "";
+  if (!files.length) return;
+  $("controls").style.display = "block";
+  $("dock").style.display = "flex";
+  $("hint").style.display = "block";
+  for (const f of files) await addItem(f);
+});
+
+async function addItem(file) {
+  const card = document.createElement("div");
+  card.className = "card";
+  card.innerHTML = `
+    <div class="imgbox"><span class="tag">POSITIVE</span>
+      <div class="spin">developing&hellip;</div></div>
+    <div class="row"><span class="name"></span>
+      <button class="btn small ghost cmp">Compare</button>
+      <button class="btn small save">Save</button></div>`;
+  card.querySelector(".name").textContent = file.name;
+  $("cards").appendChild(card);
+  const box = card.querySelector(".imgbox");
+  try {
+    const bmp = await createImageBitmap(file);
+    const it = { name: file.name.replace(/\.[^.]+$/, ""), bmp,
+                 url: null, negUrl: URL.createObjectURL(file), showingNeg: false,
+                 imgEl: document.createElement("img"), tagEl: card.querySelector(".tag") };
+    items.push(it);
+    box.appendChild(it.imgEl);
+    await develop(it);
+    box.querySelector(".spin")?.remove();
+    const toggle = () => {
+      it.showingNeg = !it.showingNeg;
+      it.imgEl.src = it.showingNeg ? it.negUrl : it.url;
+      it.tagEl.textContent = it.showingNeg ? "NEGATIVE" : "POSITIVE";
+    };
+    it.imgEl.onclick = toggle;
+    card.querySelector(".cmp").onclick = toggle;
+    card.querySelector(".save").onclick = () => saveItem(it);
+  } catch (err) {
+    box.querySelector(".spin").textContent = "couldn't read this image";
+  }
+}
+
+async function develop(it) {
+  await new Promise(r => setTimeout(r));            // let UI breathe
+  const cv = convert(it.bmp, params(), PREVIEW_DIM);
+  const blob = await new Promise(r => cv.toBlob(r, "image/jpeg", 0.9));
+  if (it.url) URL.revokeObjectURL(it.url);
+  it.url = URL.createObjectURL(blob);
+  if (!it.showingNeg) it.imgEl.src = it.url;
+}
+
+let developing = false;
+async function redevelopAll() {
+  if (developing) return; developing = true;
+  for (const it of items) await develop(it);
+  developing = false;
+}
+
+async function saveItem(it) {
+  const cv = convert(it.bmp, params(), FULL_DIM);
+  const blob = await new Promise(r => cv.toBlob(r, "image/jpeg", 0.95));
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = it.name + "_positive.jpg";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+}
+
+$("saveAllBtn").onclick = async () => {
+  for (const it of items) { await saveItem(it); await new Promise(r => setTimeout(r, 600)); }
+};
+</script>
+</body>
+</html>
