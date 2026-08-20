@@ -29,7 +29,8 @@
     font-size:16px; font-weight:600; background:var(--accent); color:#1a1206; cursor:pointer;}
   .btn:active{transform:scale(.97);}
   .btn.ghost{background:var(--panel2); color:var(--text); border:1px solid var(--line);}
-  .btn.small{padding:8px 14px; font-size:13px; border-radius:9px;}
+  .btn.small{padding:8px 12px; font-size:13px; border-radius:9px;}
+  .btn.on{background:var(--accent); color:#1a1206; border-color:var(--accent);}
 
   .controls{background:var(--panel); border:1px solid var(--line); border-radius:16px;
     padding:14px 16px 6px; margin:12px 0; display:none;}
@@ -43,7 +44,7 @@
   input[type=range]::-webkit-slider-runnable-track{height:4px; border-radius:2px; background:var(--line);}
   input[type=range]::-webkit-slider-thumb{-webkit-appearance:none; width:22px; height:22px;
     border-radius:50%; background:var(--accent); margin-top:-9px; border:2.5px solid var(--bg);}
-  .ctl-foot{display:flex; gap:8px; padding:8px 0 10px;}
+  .ctl-foot{display:flex; gap:8px; padding:8px 0 10px; flex-wrap:wrap;}
 
   .cards{display:flex; flex-direction:column; gap:14px; margin:14px 0;}
   .card{background:var(--panel); border:1px solid var(--line); border-radius:16px; overflow:hidden;}
@@ -52,11 +53,13 @@
   .card .tag{position:absolute; top:10px; left:10px; font-size:11px; font-weight:700;
     letter-spacing:1px; padding:4px 9px; border-radius:7px; background:rgba(0,0,0,.55);
     color:var(--accent2); backdrop-filter:blur(4px);}
-  .card .row{display:flex; align-items:center; gap:8px; padding:10px 12px;}
-  .card .name{flex:1; font-size:12px; color:var(--dim); overflow:hidden;
+  .card.picking .tag{background:var(--accent); color:#1a1206;}
+  .card .row{display:flex; align-items:center; gap:6px; padding:10px 12px; flex-wrap:wrap;}
+  .card .name{flex:1 1 100%; font-size:12px; color:var(--dim); overflow:hidden;
     text-overflow:ellipsis; white-space:nowrap;}
   .spin{position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
     color:var(--dim); font-size:13px;}
+  .grow{flex:1;}
 
   .dock{position:fixed; left:0; right:0; bottom:0; display:none; gap:10px;
     padding:12px 16px calc(12px + env(safe-area-inset-bottom));
@@ -71,7 +74,7 @@
 
   <div class="pickzone" id="pickzone">
     <button class="btn" id="pickBtn">Choose negatives</button>
-    <p>Pick your DigitaLIZA&nbsp;Max shots from the photo library.<br>
+    <p>Pick photos of your film negatives from the photo library.<br>
        Everything is converted on your phone &mdash; nothing is uploaded.</p>
     <input type="file" id="fileInput" accept="image/*" multiple hidden>
   </div>
@@ -86,26 +89,34 @@
       <input type="range" id="scurve" min="0" max="1" step="0.05" value="0.25"><output>0.25</output></div>
     <div class="ctl"><label>Saturation</label>
       <input type="range" id="saturation" min="0" max="2" step="0.05" value="1.15"><output>1.15</output></div>
+    <div class="ctl"><label>Warmth</label>
+      <input type="range" id="temp" min="-1" max="1" step="0.05" value="0"><output>0.0</output></div>
+    <div class="ctl"><label>Tint</label>
+      <input type="range" id="tint" min="-1" max="1" step="0.05" value="0"><output>0.0</output></div>
     <div class="ctl"><label>Edge crop</label>
       <input type="range" id="crop" min="0" max="0.2" step="0.005" value="0"><output>0%</output></div>
     <div class="ctl-foot">
-      <button class="btn ghost small" id="resetBtn">Reset</button>
+      <button class="btn ghost small" id="bwBtn">B&amp;W film</button>
+      <span class="grow"></span>
+      <button class="btn ghost small" id="resetBtn">Reset settings</button>
     </div>
   </div>
 
   <div class="cards" id="cards"></div>
 
   <p class="hint" id="hint" style="display:none">
-    Tap a photo to compare with the original negative. <b>Save</b> writes a JPEG
-    (in Safari it lands in Downloads/Files; you can also long-press the image and
-    &ldquo;Add to Photos&rdquo;). Include a sliver of blank orange film edge in your
-    shots &mdash; it anchors the color correction. Tip: open this file in Safari and use
-    Share&nbsp;&rarr;&nbsp;Add&nbsp;to&nbsp;Home&nbsp;Screen to install it as an app.
+    Tap a photo to compare with the original negative.
+    <b>&#10227;</b> rotates, <b>&#8646;</b> mirrors (flip if you scanned emulsion-side up).
+    <b>Base</b>: tap it, then tap a blank orange film edge in the photo &mdash; that pins the
+    color correction exactly (tap Base again to go back to auto).
+    <b>Save</b> writes a JPEG (Safari puts it in Downloads/Files; or long-press the image
+    &rarr; &ldquo;Add to Photos&rdquo;).
   </p>
 </div>
 
 <div class="dock" id="dock">
   <button class="btn ghost" id="addBtn">Add more</button>
+  <button class="btn ghost" id="clearBtn">Clear all</button>
   <button class="btn" id="saveAllBtn">Save all</button>
 </div>
 
@@ -130,17 +141,18 @@ const percentile = (sorted, p) => {
 /* Analyze a downsampled copy; build one 256-entry output LUT per channel.
    Pipeline: linearize -> /base (orange mask) -> log density -> per-channel
    percentile stretch (excluding crush-floor pixels) -> print emulation ->
-   S-curve. Saturation is applied cross-channel afterwards. */
-function computeMaps(smallData, P) {
+   warmth/tint gains -> S-curve. Saturation/B&W applied cross-channel after. */
+function computeMaps(smallData, P, baseOverride) {
   const n = smallData.length >> 2;
   const CRUSH = S2L[2], BLACK_CLIP = 0.5, WHITE_CLIP = 0.5;
+  const gains = [Math.pow(2, P.temp * 0.5), Math.pow(2, -P.tint * 0.5), Math.pow(2, -P.temp * 0.5)];
   const maps = [];
   for (let c = 0; c < 3; c++) {
     const lin = new Float32Array(n);
     for (let i = 0; i < n; i++) lin[i] = S2L[smallData[(i << 2) + c]];
     const sorted = Float32Array.from(lin).sort();
-    const base = Math.max(1e-4, percentile(sorted, 99.5));
-    // densities of non-crushed pixels
+    const base = baseOverride ? Math.max(1e-4, baseOverride[c])
+                              : Math.max(1e-4, percentile(sorted, 99.5));
     const dv = [];
     for (let i = 0; i < n; i++)
       if (lin[i] > CRUSH) dv.push(-Math.log10(Math.max(lin[i] / base, 1e-4)));
@@ -152,7 +164,7 @@ function computeMaps(smallData, P) {
     for (let v = 0; v < 256; v++) {
       const d = -Math.log10(Math.max(S2L[v] / base, 1e-4));
       const pos = Math.min(1, Math.max(0, (d - lo) / (hi - lo)));
-      let outLin = Math.pow(10, -P.printRange * (1 - pos)) * Math.pow(2, P.exposure);
+      const outLin = Math.pow(10, -P.printRange * (1 - pos)) * Math.pow(2, P.exposure) * gains[c];
       let s = l2s(outLin);
       const sm = s * s * (3 - 2 * s);            // smoothstep S-curve
       s = s * (1 - P.scurve) + sm * P.scurve;
@@ -163,60 +175,86 @@ function computeMaps(smallData, P) {
   return maps;
 }
 
-function applyMaps(data, maps, sat) {
+function applyMaps(data, maps, sat, bw) {
   const [mr, mg, mb] = maps;
   for (let i = 0; i < data.length; i += 4) {
     let r = mr[data[i]], g = mg[data[i + 1]], b = mb[data[i + 2]];
-    if (sat !== 1) {
-      const gray = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    const gray = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    if (bw) { r = g = b = gray; }
+    else if (sat !== 1) {
       r = gray + (r - gray) * sat; g = gray + (g - gray) * sat; b = gray + (b - gray) * sat;
     }
     data[i] = r; data[i + 1] = g; data[i + 2] = b;
   }
 }
 
-/* draw bitmap (optionally edge-cropped) into a canvas capped at maxDim */
-function drawCapped(bmp, cropFrac, maxDim) {
+/* draw bitmap (edge-cropped, rotated, mirrored) into a canvas capped at maxDim */
+function drawOriented(bmp, cropFrac, rot, mirror, maxDim) {
   const sx = Math.round(bmp.width * cropFrac), sy = Math.round(bmp.height * cropFrac);
   const sw = bmp.width - 2 * sx, sh = bmp.height - 2 * sy;
-  const scale = Math.min(1, maxDim / Math.max(sw, sh));
+  const swapped = rot % 180 !== 0;
+  const ow = swapped ? sh : sw, oh = swapped ? sw : sh;
+  const scale = Math.min(1, maxDim / Math.max(ow, oh));
   const cv = document.createElement("canvas");
-  cv.width = Math.max(1, Math.round(sw * scale));
-  cv.height = Math.max(1, Math.round(sh * scale));
-  cv.getContext("2d", { willReadFrequently: true })
-    .drawImage(bmp, sx, sy, sw, sh, 0, 0, cv.width, cv.height);
+  cv.width = Math.max(1, Math.round(ow * scale));
+  cv.height = Math.max(1, Math.round(oh * scale));
+  const ctx = cv.getContext("2d", { willReadFrequently: true });
+  ctx.save();
+  ctx.translate(cv.width / 2, cv.height / 2);
+  ctx.rotate(rot * Math.PI / 180);
+  if (mirror) ctx.scale(-1, 1);
+  ctx.drawImage(bmp, sx, sy, sw, sh, -sw * scale / 2, -sh * scale / 2, sw * scale, sh * scale);
+  ctx.restore();
   return cv;
 }
 
-function convert(bmp, P, maxDim) {
-  const cv = drawCapped(bmp, P.crop, maxDim);
+function convert(it, P, maxDim) {
+  const cv = drawOriented(it.bmp, P.crop, it.rot, it.mirror, maxDim);
   const ctx = cv.getContext("2d", { willReadFrequently: true });
   const img = ctx.getImageData(0, 0, cv.width, cv.height);
-  // stats from a ~500px copy (noise-averaged)
-  const smallCv = drawCapped(bmp, P.crop, 500 * Math.max(cv.width, cv.height) / Math.min(cv.width, cv.height));
+  const smallCv = statsCanvas(it, P);
   const small = smallCv.getContext("2d", { willReadFrequently: true })
     .getImageData(0, 0, smallCv.width, smallCv.height).data;
-  const maps = computeMaps(small, P);
-  applyMaps(img.data, maps, P.saturation);
+  const maps = computeMaps(small, P, it.base);
+  applyMaps(img.data, maps, P.saturation, P.bw);
   ctx.putImageData(img, 0, 0);
   return cv;
 }
 
+function statsCanvas(it, P) {   // ~500px min-dim negative copy (noise-averaged)
+  const aspect = Math.max(it.bmp.width, it.bmp.height) / Math.min(it.bmp.width, it.bmp.height);
+  return drawOriented(it.bmp, P.crop, it.rot, it.mirror, Math.round(500 * aspect));
+}
+
 /* ---------------- app state / UI ---------------- */
 const $ = id => document.getElementById(id);
-const items = [];           // {name, bmp, url, imgEl, tagEl, showingNeg, negUrl}
+const items = [];
+let bw = false;
 const params = () => ({
   exposure: +$("exposure").value, printRange: +$("printRange").value,
-  scurve: +$("scurve").value, saturation: +$("saturation").value, crop: +$("crop").value,
+  scurve: +$("scurve").value, saturation: +$("saturation").value,
+  temp: +$("temp").value, tint: +$("tint").value, crop: +$("crop").value, bw,
 });
 const PREVIEW_DIM = 1400, FULL_DIM = 4096;
 
 $("pickBtn").onclick = () => $("fileInput").click();
 $("addBtn").onclick = () => $("fileInput").click();
-$("resetBtn").onclick = () => {
-  const d = { exposure: 0, printRange: 2, scurve: 0.25, saturation: 1.15, crop: 0 };
-  for (const k in d) { $(k).value = d[k]; syncOutput($(k)); }
+$("bwBtn").onclick = () => {
+  bw = !bw;
+  $("bwBtn").classList.toggle("on", bw);
   redevelopAll();
+};
+$("resetBtn").onclick = () => {
+  const d = { exposure: 0, printRange: 2, scurve: 0.25, saturation: 1.15, temp: 0, tint: 0, crop: 0 };
+  for (const k in d) { $(k).value = d[k]; syncOutput($(k)); }
+  if (bw) { bw = false; $("bwBtn").classList.remove("on"); }
+  redevelopAll();
+};
+$("clearBtn").onclick = () => {
+  while (items.length) removeItem(items[0]);
+  $("controls").style.display = "none";
+  $("dock").style.display = "none";
+  $("hint").style.display = "none";
 };
 
 function syncOutput(input) {
@@ -224,7 +262,7 @@ function syncOutput(input) {
   if (input.id === "crop") out.textContent = Math.round(input.value * 100) + "%";
   else out.textContent = (+input.value).toFixed(2).replace(/0$/, "");
 }
-for (const id of ["exposure", "printRange", "scurve", "saturation", "crop"]) {
+for (const id of ["exposure", "printRange", "scurve", "saturation", "temp", "tint", "crop"]) {
   $(id).addEventListener("input", () => syncOutput($(id)));
   $(id).addEventListener("change", redevelopAll);
 }
@@ -245,41 +283,106 @@ async function addItem(file) {
   card.innerHTML = `
     <div class="imgbox"><span class="tag">POSITIVE</span>
       <div class="spin">developing&hellip;</div></div>
-    <div class="row"><span class="name"></span>
+    <div class="row">
+      <span class="name"></span>
+      <button class="btn small ghost rot" title="Rotate">&#10227;</button>
+      <button class="btn small ghost mir" title="Mirror">&#8646;</button>
+      <button class="btn small ghost basebtn">Base</button>
       <button class="btn small ghost cmp">Compare</button>
-      <button class="btn small save">Save</button></div>`;
+      <span class="grow"></span>
+      <button class="btn small save">Save</button>
+      <button class="btn small ghost del" title="Remove">&#10005;</button>
+    </div>`;
   card.querySelector(".name").textContent = file.name;
   $("cards").appendChild(card);
   const box = card.querySelector(".imgbox");
   try {
     const bmp = await createImageBitmap(file);
-    const it = { name: file.name.replace(/\.[^.]+$/, ""), bmp,
-                 url: null, negUrl: URL.createObjectURL(file), showingNeg: false,
+    const it = { name: file.name.replace(/\.[^.]+$/, ""), bmp, card,
+                 rot: 0, mirror: false, base: null, picking: false,
+                 url: null, negUrl: null, showingNeg: false,
                  imgEl: document.createElement("img"), tagEl: card.querySelector(".tag") };
     items.push(it);
     box.appendChild(it.imgEl);
     await develop(it);
     box.querySelector(".spin")?.remove();
+
+    const setTag = () => it.tagEl.textContent =
+      it.picking ? "TAP A BLANK FILM EDGE" : it.showingNeg ? "NEGATIVE" : "POSITIVE";
     const toggle = () => {
       it.showingNeg = !it.showingNeg;
       it.imgEl.src = it.showingNeg ? it.negUrl : it.url;
-      it.tagEl.textContent = it.showingNeg ? "NEGATIVE" : "POSITIVE";
+      setTag();
     };
-    it.imgEl.onclick = toggle;
+    it.imgEl.onclick = e => { it.picking ? pickBase(it, e) : toggle(); };
     card.querySelector(".cmp").onclick = toggle;
+    card.querySelector(".rot").onclick = async () => { it.rot = (it.rot + 90) % 360; await develop(it); };
+    card.querySelector(".mir").onclick = async () => { it.mirror = !it.mirror; await develop(it); };
     card.querySelector(".save").onclick = () => saveItem(it);
+    card.querySelector(".del").onclick = () => removeItem(it);
+    const baseBtn = card.querySelector(".basebtn");
+    baseBtn.onclick = async () => {
+      if (it.base && !it.picking) {            // clear override -> auto
+        it.base = null;
+        baseBtn.textContent = "Base"; baseBtn.classList.remove("on");
+        await develop(it);
+        return;
+      }
+      it.picking = !it.picking;
+      card.classList.toggle("picking", it.picking);
+      if (it.picking && !it.showingNeg) toggle();   // show negative to tap its edge
+      setTag();
+    };
+    it.setTag = setTag; it.baseBtn = baseBtn;
   } catch (err) {
     box.querySelector(".spin").textContent = "couldn't read this image";
   }
 }
 
+async function pickBase(it, e) {
+  const r = it.imgEl.getBoundingClientRect();
+  const fx = (e.clientX - r.left) / r.width, fy = (e.clientY - r.top) / r.height;
+  const cv = statsCanvas(it, params());
+  const x = Math.min(cv.width - 1, Math.max(0, Math.round(fx * cv.width)));
+  const y = Math.min(cv.height - 1, Math.max(0, Math.round(fy * cv.height)));
+  const ctx = cv.getContext("2d", { willReadFrequently: true });
+  const x0 = Math.max(0, x - 2), y0 = Math.max(0, y - 2);
+  const d = ctx.getImageData(x0, y0, Math.min(5, cv.width - x0), Math.min(5, cv.height - y0)).data;
+  const acc = [0, 0, 0]; const n = d.length >> 2;
+  for (let i = 0; i < d.length; i += 4)
+    { acc[0] += S2L[d[i]]; acc[1] += S2L[d[i + 1]]; acc[2] += S2L[d[i + 2]]; }
+  it.base = acc.map(v => v / n);
+  it.picking = false;
+  it.card.classList.remove("picking");
+  it.baseBtn.textContent = "Base ✓"; it.baseBtn.classList.add("on");
+  if (it.showingNeg) { it.showingNeg = false; }
+  await develop(it);
+  it.imgEl.src = it.url;
+  it.setTag();
+}
+
+function removeItem(it) {
+  const i = items.indexOf(it);
+  if (i >= 0) items.splice(i, 1);
+  if (it.url) URL.revokeObjectURL(it.url);
+  if (it.negUrl) URL.revokeObjectURL(it.negUrl);
+  it.bmp.close?.();
+  it.card.remove();
+}
+
 async function develop(it) {
   await new Promise(r => setTimeout(r));            // let UI breathe
-  const cv = convert(it.bmp, params(), PREVIEW_DIM);
+  const P = params();
+  const cv = convert(it, P, PREVIEW_DIM);
   const blob = await new Promise(r => cv.toBlob(r, "image/jpeg", 0.9));
   if (it.url) URL.revokeObjectURL(it.url);
   it.url = URL.createObjectURL(blob);
-  if (!it.showingNeg) it.imgEl.src = it.url;
+  // negative preview with matching crop/orientation so Compare lines up
+  const negCv = drawOriented(it.bmp, P.crop, it.rot, it.mirror, PREVIEW_DIM);
+  const negBlob = await new Promise(r => negCv.toBlob(r, "image/jpeg", 0.85));
+  if (it.negUrl) URL.revokeObjectURL(it.negUrl);
+  it.negUrl = URL.createObjectURL(negBlob);
+  it.imgEl.src = it.showingNeg ? it.negUrl : it.url;
 }
 
 let developing = false;
@@ -290,7 +393,7 @@ async function redevelopAll() {
 }
 
 async function saveItem(it) {
-  const cv = convert(it.bmp, params(), FULL_DIM);
+  const cv = convert(it, params(), FULL_DIM);
   const blob = await new Promise(r => cv.toBlob(r, "image/jpeg", 0.95));
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
