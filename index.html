@@ -10,7 +10,7 @@
 <style>
   :root{
     --bg:#141210; --panel:#1f1c18; --panel2:#282420; --line:#3a352e;
-    --text:#f0ebe2; --dim:#a89f90; --accent:#e8842c; --accent2:#f4a852;
+    --text:#f0ebe2; --dim:#a89f90; --accent:#e8842c; --accent2:#f4a852; --warn:#ff7043;
   }
   *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
   html,body{margin:0; padding:0; background:var(--bg); color:var(--text);
@@ -54,12 +54,36 @@
     letter-spacing:1px; padding:4px 9px; border-radius:7px; background:rgba(0,0,0,.55);
     color:var(--accent2); backdrop-filter:blur(4px);}
   .card.picking .tag{background:var(--accent); color:#1a1206;}
-  .card .row{display:flex; align-items:center; gap:6px; padding:10px 12px; flex-wrap:wrap;}
-  .card .name{flex:1 1 100%; font-size:12px; color:var(--dim); overflow:hidden;
+  .histbox{position:relative; background:#000; border-top:1px solid var(--line);}
+  .histbox canvas{display:block; width:100%; height:44px;}
+  .histbox span{position:absolute; bottom:4px; font-size:10px; color:var(--dim);
+    background:rgba(0,0,0,.5); padding:1px 5px; border-radius:4px; font-variant-numeric:tabular-nums;}
+  .histbox .clipL{left:6px;} .histbox .clipR{right:6px;}
+  .histbox span.bad{color:var(--warn); font-weight:700;}
+  .card .row{display:flex; align-items:center; gap:6px; padding:8px 12px; flex-wrap:wrap;}
+  .card .row.tight{padding-top:10px; padding-bottom:2px;}
+  .card .name{flex:1; font-size:12px; color:var(--dim); overflow:hidden;
     text-overflow:ellipsis; white-space:nowrap;}
+  .evctl{display:flex; align-items:center; gap:8px; flex:1; min-width:150px;}
+  .evctl label{font-size:12px; color:var(--dim); font-weight:600;}
+  .evctl input{flex:1;}
+  .evctl output{font-size:12px; color:var(--accent2); width:34px; text-align:right; font-variant-numeric:tabular-nums;}
   .spin{position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
     color:var(--dim); font-size:13px;}
   .grow{flex:1;}
+
+  .cropov{position:absolute; inset:0; touch-action:none; overflow:hidden;}
+  .cbox{position:absolute; border:1.5px solid var(--accent);
+    box-shadow:0 0 0 4000px rgba(0,0,0,.55); cursor:move;}
+  .cbox .h{position:absolute; width:30px; height:30px; border:3.5px solid var(--accent);
+    background:rgba(20,18,16,.4);}
+  .cbox .tl{left:-4px; top:-4px; border-right:none; border-bottom:none;}
+  .cbox .tr{right:-4px; top:-4px; border-left:none; border-bottom:none;}
+  .cbox .bl{left:-4px; bottom:-4px; border-right:none; border-top:none;}
+  .cbox .br{right:-4px; bottom:-4px; border-left:none; border-top:none;}
+  .ctools{position:absolute; bottom:10px; left:0; right:0; display:flex;
+    gap:8px; justify-content:center; z-index:2; pointer-events:none;}
+  .ctools .btn{pointer-events:auto;}
 
   .dock{position:fixed; left:0; right:0; bottom:0; display:none; gap:10px;
     padding:12px 16px calc(12px + env(safe-area-inset-bottom));
@@ -97,6 +121,7 @@
       <input type="range" id="crop" min="0" max="0.2" step="0.005" value="0"><output>0%</output></div>
     <div class="ctl-foot">
       <button class="btn ghost small" id="bwBtn">B&amp;W film</button>
+      <button class="btn ghost small" id="tiffBtn">TIFF save</button>
       <span class="grow"></span>
       <button class="btn ghost small" id="resetBtn">Reset settings</button>
     </div>
@@ -106,11 +131,17 @@
 
   <p class="hint" id="hint" style="display:none">
     Tap a photo to compare with the original negative.
-    <b>&#10227;</b> rotates, <b>&#8646;</b> mirrors (flip if you scanned emulsion-side up).
-    <b>Base</b>: tap it, then tap a blank orange film edge in the photo &mdash; that pins the
-    color correction exactly (tap Base again to go back to auto).
-    <b>Save</b> writes a JPEG (Safari puts it in Downloads/Files; or long-press the image
-    &rarr; &ldquo;Add to Photos&rdquo;).
+    <b>Auto</b> finds the film frame and crops the holder away;
+    <b>Crop</b> lets you drag the frame yourself (drag corners to resize, inside to move).
+    <b>&#10227;</b> rotates, <b>&#8646;</b> mirrors.
+    <b>Base</b>: tap it, then tap a blank orange film edge &mdash; pins the color correction (tap again for auto).
+    <b>Heal</b>: tap it, then tap dust spots on the photo; <b>&#8617;</b> undoes the last spot.
+    Set crop &amp; rotation before healing. The histogram shows shadow/highlight
+    clipping percentages &mdash; they turn red above 1%.
+    <b>EV</b> adjusts exposure for that frame only.
+    <b>Photos</b> opens the iOS share sheet &mdash; tap &ldquo;Save Image&rdquo; there to add it to
+    your photo library. <b>Save</b> downloads a file instead (JPEG, or 16-bit TIFF if
+    &ldquo;TIFF save&rdquo; is on &mdash; TIFF files are big but edit-friendly).
   </p>
 </div>
 
@@ -138,15 +169,12 @@ const percentile = (sorted, p) => {
   return sorted[lo] + (sorted[hi] - sorted[lo]) * (i - lo);
 };
 
-/* Analyze a downsampled copy; build one 256-entry output LUT per channel.
-   Pipeline: linearize -> /base (orange mask) -> log density -> per-channel
-   percentile stretch (excluding crush-floor pixels) -> print emulation ->
-   warmth/tint gains -> S-curve. Saturation/B&W applied cross-channel after. */
+/* Analyze a downsampled copy; build 8-bit and 16-bit output LUTs per channel. */
 function computeMaps(smallData, P, baseOverride) {
   const n = smallData.length >> 2;
   const CRUSH = S2L[2], BLACK_CLIP = 0.5, WHITE_CLIP = 0.5;
   const gains = [Math.pow(2, P.temp * 0.5), Math.pow(2, -P.tint * 0.5), Math.pow(2, -P.temp * 0.5)];
-  const maps = [];
+  const m8 = [], m16 = [];
   for (let c = 0; c < 3; c++) {
     const lin = new Float32Array(n);
     for (let i = 0; i < n; i++) lin[i] = S2L[smallData[(i << 2) + c]];
@@ -160,7 +188,7 @@ function computeMaps(smallData, P, baseOverride) {
       Float64Array.from(lin, x => -Math.log10(Math.max(x / base, 1e-4))).sort();
     const lo = percentile(ds, BLACK_CLIP);
     const hi = Math.max(lo + 1e-3, percentile(ds, 100 - WHITE_CLIP));
-    const map = new Uint8Array(256);
+    const map8 = new Uint8Array(256), map16 = new Uint16Array(256);
     for (let v = 0; v < 256; v++) {
       const d = -Math.log10(Math.max(S2L[v] / base, 1e-4));
       const pos = Math.min(1, Math.max(0, (d - lo) / (hi - lo)));
@@ -168,11 +196,12 @@ function computeMaps(smallData, P, baseOverride) {
       let s = l2s(outLin);
       const sm = s * s * (3 - 2 * s);            // smoothstep S-curve
       s = s * (1 - P.scurve) + sm * P.scurve;
-      map[v] = Math.round(s * 255);
+      map8[v] = Math.round(s * 255);
+      map16[v] = Math.round(s * 65535);
     }
-    maps.push(map);
+    m8.push(map8); m16.push(map16);
   }
-  return maps;
+  return { m8, m16 };
 }
 
 function applyMaps(data, maps, sat, bw) {
@@ -188,10 +217,34 @@ function applyMaps(data, maps, sat, bw) {
   }
 }
 
-/* draw bitmap (edge-cropped, rotated, mirrored) into a canvas capped at maxDim */
-function drawOriented(bmp, cropFrac, rot, mirror, maxDim) {
-  const sx = Math.round(bmp.width * cropFrac), sy = Math.round(bmp.height * cropFrac);
-  const sw = bmp.width - 2 * sx, sh = bmp.height - 2 * sy;
+/* Heal spots: fill each disc by mirroring pixels from just outside the ring.
+   Works on RGBA8 (ch=4) or RGB16 (ch=3) buffers. */
+function healSpots(data, w, h, ch, spots) {
+  for (const s of spots) {
+    const cx = s.fx * w, cy = s.fy * h, r = Math.max(3, s.r * Math.max(w, h));
+    const x0 = Math.max(0, Math.floor(cx - r)), x1 = Math.min(w - 1, Math.ceil(cx + r));
+    const y0 = Math.max(0, Math.floor(cy - r)), y1 = Math.min(h - 1, Math.ceil(cy + r));
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+      const dx = x - cx, dy = y - cy, d = Math.hypot(dx, dy);
+      if (d >= r) continue;
+      let sx, sy;
+      if (d < 0.5) { sx = cx + 2 * r; sy = cy; }
+      else { const f = (2 * r - d) / d; sx = cx + dx * f; sy = cy + dy * f; }
+      sx = Math.min(w - 1, Math.max(0, Math.round(sx)));
+      sy = Math.min(h - 1, Math.max(0, Math.round(sy)));
+      const si = (sy * w + sx) * ch, di = (y * w + x) * ch;
+      const a = Math.min(1, (r - d) / (0.25 * r));
+      for (let c = 0; c < 3; c++)
+        data[di + c] = data[di + c] * (1 - a) + data[si + c] * a;
+    }
+  }
+}
+
+/* draw bitmap (per-edge-cropped, rotated, mirrored) into a canvas capped at maxDim */
+function drawOriented(bmp, ins, rot, mirror, maxDim) {
+  const sx = Math.round(bmp.width * ins.l), sy = Math.round(bmp.height * ins.t);
+  const sw = bmp.width - sx - Math.round(bmp.width * ins.r);
+  const sh = bmp.height - sy - Math.round(bmp.height * ins.b);
   const swapped = rot % 180 !== 0;
   const ow = swapped ? sh : sw, oh = swapped ? sw : sh;
   const scale = Math.min(1, maxDim / Math.max(ow, oh));
@@ -208,28 +261,184 @@ function drawOriented(bmp, cropFrac, rot, mirror, maxDim) {
   return cv;
 }
 
-function convert(it, P, maxDim) {
-  const cv = drawOriented(it.bmp, P.crop, it.rot, it.mirror, maxDim);
-  const ctx = cv.getContext("2d", { willReadFrequently: true });
-  const img = ctx.getImageData(0, 0, cv.width, cv.height);
-  const smallCv = statsCanvas(it, P);
-  const small = smallCv.getContext("2d", { willReadFrequently: true })
-    .getImageData(0, 0, smallCv.width, smallCv.height).data;
-  const maps = computeMaps(small, P, it.base);
-  applyMaps(img.data, maps, P.saturation, P.bw);
-  ctx.putImageData(img, 0, 0);
-  return cv;
+const effIns = (it, P) => it.cropRect ||
+  { l: P.crop, t: P.crop, r: P.crop, b: P.crop };
+
+/* map fractional points between original-bitmap space and oriented-view space */
+function srcToView(fx, fy, rot, mirror) {
+  let sx = fx - 0.5, sy = fy - 0.5;
+  if (mirror) sx = -sx;
+  let cx, cy;
+  switch (rot) {
+    case 0:   cx = sx;  cy = sy;  break;
+    case 90:  cx = -sy; cy = sx;  break;
+    case 180: cx = -sx; cy = -sy; break;
+    default:  cx = sy;  cy = -sx;
+  }
+  return [cx + 0.5, cy + 0.5];
+}
+function viewToSrc(u, v, rot, mirror) {
+  const cx = u - 0.5, cy = v - 0.5;
+  let sx, sy;
+  switch (rot) {
+    case 0:   sx = cx;  sy = cy;  break;
+    case 90:  sx = cy;  sy = -cx; break;
+    case 180: sx = -cx; sy = -cy; break;
+    default:  sx = -cy; sy = cx;
+  }
+  if (mirror) sx = -sx;
+  return [sx + 0.5, sy + 0.5];
 }
 
 function statsCanvas(it, P) {   // ~500px min-dim negative copy (noise-averaged)
-  const aspect = Math.max(it.bmp.width, it.bmp.height) / Math.min(it.bmp.width, it.bmp.height);
-  return drawOriented(it.bmp, P.crop, it.rot, it.mirror, Math.round(500 * aspect));
+  const a = Math.max(it.bmp.width, it.bmp.height) / Math.min(it.bmp.width, it.bmp.height);
+  return drawOriented(it.bmp, effIns(it, P), it.rot, it.mirror, Math.round(500 * a));
+}
+
+function itemMaps(it, P) {
+  const smallCv = statsCanvas(it, P);
+  const small = smallCv.getContext("2d", { willReadFrequently: true })
+    .getImageData(0, 0, smallCv.width, smallCv.height).data;
+  return computeMaps(small, P, it.base);
+}
+
+function convert(it, P, maxDim) {          // 8-bit path (preview / JPEG)
+  const cv = drawOriented(it.bmp, effIns(it, P), it.rot, it.mirror, maxDim);
+  const ctx = cv.getContext("2d", { willReadFrequently: true });
+  const img = ctx.getImageData(0, 0, cv.width, cv.height);
+  applyMaps(img.data, itemMaps(it, P).m8, P.saturation, P.bw);
+  healSpots(img.data, cv.width, cv.height, 4, it.spots);
+  ctx.putImageData(img, 0, 0);
+  return { cv, img };
+}
+
+function convert16(it, P, maxDim) {        // 16-bit path (TIFF)
+  const cv = drawOriented(it.bmp, effIns(it, P), it.rot, it.mirror, maxDim);
+  const w = cv.width, h = cv.height;
+  const src = cv.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, w, h).data;
+  const [mr, mg, mb] = itemMaps(it, P).m16;
+  const out = new Uint16Array(w * h * 3);
+  const sat = P.saturation, bw = P.bw;
+  for (let i = 0, o = 0; i < src.length; i += 4, o += 3) {
+    let r = mr[src[i]], g = mg[src[i + 1]], b = mb[src[i + 2]];
+    const gray = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    if (bw) { r = g = b = gray; }
+    else if (sat !== 1) {
+      r = gray + (r - gray) * sat; g = gray + (g - gray) * sat; b = gray + (b - gray) * sat;
+    }
+    out[o]     = Math.max(0, Math.min(65535, r));
+    out[o + 1] = Math.max(0, Math.min(65535, g));
+    out[o + 2] = Math.max(0, Math.min(65535, b));
+  }
+  healSpots(out, w, h, 3, it.spots);
+  return { w, h, out };
+}
+
+/* minimal uncompressed 16-bit RGB little-endian TIFF */
+function makeTiff(w, h, u16) {
+  const imgBytes = u16.length * 2, entries = 11;
+  const ifdOff = 8 + imgBytes, extOff = ifdOff + 2 + entries * 12 + 4;
+  const buf = new ArrayBuffer(extOff + 12);
+  const dv = new DataView(buf);
+  dv.setUint16(0, 0x4949, true); dv.setUint16(2, 42, true); dv.setUint32(4, ifdOff, true);
+  new Uint8Array(buf, 8, imgBytes).set(new Uint8Array(u16.buffer, u16.byteOffset, imgBytes));
+  let o = ifdOff;
+  dv.setUint16(o, entries, true); o += 2;
+  const E = (tag, type, count, val) => {
+    dv.setUint16(o, tag, true); dv.setUint16(o + 2, type, true);
+    dv.setUint32(o + 4, count, true); dv.setUint32(o + 8, val, true); o += 12;
+  };
+  E(256, 4, 1, w); E(257, 4, 1, h);
+  E(258, 3, 3, extOff);            // BitsPerSample [16,16,16]
+  E(259, 3, 1, 1);                 // no compression
+  E(262, 3, 1, 2);                 // RGB
+  E(273, 4, 1, 8);                 // strip offset
+  E(277, 3, 1, 3);                 // samples/pixel
+  E(278, 4, 1, h);                 // rows/strip
+  E(279, 4, 1, imgBytes);
+  E(284, 3, 1, 1);                 // chunky
+  E(339, 3, 3, extOff + 6);        // SampleFormat [uint,uint,uint]
+  dv.setUint32(o, 0, true);
+  for (let i = 0; i < 3; i++) {
+    dv.setUint16(extOff + i * 2, 16, true);
+    dv.setUint16(extOff + 6 + i * 2, 1, true);
+  }
+  return new Blob([buf], { type: "image/tiff" });
+}
+
+/* Auto frame detection: find the film frame inside the holder capture.
+   Color film: the frame is where red >> blue (orange mask) — black holder
+   and bare white backlight both score ~0. Falls back to luminance for B&W. */
+function detectFrame(bmp) {
+  const cv = drawOriented(bmp, { l: 0, t: 0, r: 0, b: 0 }, 0, false, 400);
+  const w = cv.width, h = cv.height;
+  const d = cv.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, w, h).data;
+  const rowS = new Float32Array(h), colS = new Float32Array(w);
+  const rowL = new Float32Array(h), colL = new Float32Array(w);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = (y * w + x) * 4;
+    const r = S2L[d[i]], g = S2L[d[i + 1]], b = S2L[d[i + 2]];
+    const score = Math.max(0, r - b), lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    rowS[y] += score; colS[x] += score; rowL[y] += lum; colL[x] += lum;
+  }
+  for (let y = 0; y < h; y++) { rowS[y] /= w; rowL[y] /= w; }
+  for (let x = 0; x < w; x++) { colS[x] /= h; colL[x] /= h; }
+  const pick = (arr) => {
+    const ref = percentile(Float32Array.from(arr).sort(), 90);
+    if (ref < 1e-5) return null;
+    const thr = 0.3 * ref;
+    let a = 0, b = arr.length - 1;
+    while (a < b && arr[a] < thr) a++;
+    while (b > a && arr[b] < thr) b--;
+    return b - a < arr.length * 0.3 ? null : [a, b];
+  };
+  const orange = percentile(Float32Array.from(rowS).sort(), 90) > 0.04;
+  const ry = pick(orange ? rowS : rowL), rx = pick(orange ? colS : colL);
+  if (!ry || !rx) return null;
+  const pad = 0.012;
+  return {
+    l: Math.min(0.45, rx[0] / w + pad), r: Math.min(0.45, 1 - (rx[1] + 1) / w + pad),
+    t: Math.min(0.45, ry[0] / h + pad), b: Math.min(0.45, 1 - (ry[1] + 1) / h + pad),
+  };
+}
+
+/* histogram + clipping */
+function drawHist(canvas, data, clipL, clipR) {
+  const BINS = 64, hists = [new Float64Array(BINS), new Float64Array(BINS), new Float64Array(BINS)];
+  let lo = 0, hi = 0, n = 0;
+  for (let i = 0; i < data.length; i += 16) {          // sample every 4th pixel
+    const r = data[i], g = data[i + 1], b = data[i + 2];
+    hists[0][r * BINS >> 8]++; hists[1][g * BINS >> 8]++; hists[2][b * BINS >> 8]++;
+    if (r <= 2 || g <= 2 || b <= 2) lo++;
+    if (r >= 253 || g >= 253 || b >= 253) hi++;
+    n++;
+  }
+  const W = canvas.width = canvas.offsetWidth * (window.devicePixelRatio || 1) || 640;
+  const H = canvas.height = 44 * (window.devicePixelRatio || 1);
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
+  ctx.globalCompositeOperation = "lighter";
+  const colors = ["#c83c30", "#3cb44c", "#3c64c8"];
+  const max = Math.max(...hists.map(hh => Math.max(...hh))) || 1;
+  hists.forEach((hh, c) => {
+    ctx.fillStyle = colors[c];
+    const bw = W / BINS;
+    for (let i = 0; i < BINS; i++) {
+      const bh = Math.sqrt(hh[i] / max) * (H - 4);
+      ctx.fillRect(i * bw, H - bh, bw + 0.5, bh);
+    }
+  });
+  const pl = 100 * lo / n, ph = 100 * hi / n;
+  clipL.textContent = "◧ " + pl.toFixed(1) + "%";
+  clipR.textContent = ph.toFixed(1) + "% ◨";
+  clipL.classList.toggle("bad", pl > 1);
+  clipR.classList.toggle("bad", ph > 1);
 }
 
 /* ---------------- app state / UI ---------------- */
 const $ = id => document.getElementById(id);
 const items = [];
-let bw = false;
+let bw = false, tiff = false;
 const params = () => ({
   exposure: +$("exposure").value, printRange: +$("printRange").value,
   scurve: +$("scurve").value, saturation: +$("saturation").value,
@@ -239,11 +448,8 @@ const PREVIEW_DIM = 1400, FULL_DIM = 4096;
 
 $("pickBtn").onclick = () => $("fileInput").click();
 $("addBtn").onclick = () => $("fileInput").click();
-$("bwBtn").onclick = () => {
-  bw = !bw;
-  $("bwBtn").classList.toggle("on", bw);
-  redevelopAll();
-};
+$("bwBtn").onclick = () => { bw = !bw; $("bwBtn").classList.toggle("on", bw); redevelopAll(); };
+$("tiffBtn").onclick = () => { tiff = !tiff; $("tiffBtn").classList.toggle("on", tiff); };
 $("resetBtn").onclick = () => {
   const d = { exposure: 0, printRange: 2, scurve: 0.25, saturation: 1.15, temp: 0, tint: 0, crop: 0 };
   for (const k in d) { $(k).value = d[k]; syncOutput($(k)); }
@@ -283,15 +489,24 @@ async function addItem(file) {
   card.innerHTML = `
     <div class="imgbox"><span class="tag">POSITIVE</span>
       <div class="spin">developing&hellip;</div></div>
+    <div class="histbox"><canvas></canvas><span class="clipL"></span><span class="clipR"></span></div>
+    <div class="row tight"><span class="name"></span>
+      <button class="btn small ghost del" title="Remove">&#10005;</button></div>
     <div class="row">
-      <span class="name"></span>
+      <button class="btn small ghost auto">Auto</button>
+      <button class="btn small ghost cropbtn">Crop</button>
       <button class="btn small ghost rot" title="Rotate">&#10227;</button>
       <button class="btn small ghost mir" title="Mirror">&#8646;</button>
       <button class="btn small ghost basebtn">Base</button>
+      <button class="btn small ghost heal">Heal</button>
+      <button class="btn small ghost undo" title="Undo heal">&#8617;</button>
       <button class="btn small ghost cmp">Compare</button>
-      <span class="grow"></span>
+    </div>
+    <div class="row">
+      <div class="evctl"><label>EV</label>
+        <input type="range" min="-2" max="2" step="0.1" value="0"><output>0.0</output></div>
       <button class="btn small save">Save</button>
-      <button class="btn small ghost del" title="Remove">&#10005;</button>
+      <button class="btn small share">Photos</button>
     </div>`;
   card.querySelector(".name").textContent = file.name;
   $("cards").appendChild(card);
@@ -299,50 +514,123 @@ async function addItem(file) {
   try {
     const bmp = await createImageBitmap(file);
     const it = { name: file.name.replace(/\.[^.]+$/, ""), bmp, card,
-                 rot: 0, mirror: false, base: null, picking: false,
+                 rot: 0, mirror: false, base: null, cropRect: null,
+                 cropSource: null, cropping: false, cropTmpUrl: null,
+                 exp: 0, spots: [], picking: false, healing: false,
                  url: null, negUrl: null, showingNeg: false,
-                 imgEl: document.createElement("img"), tagEl: card.querySelector(".tag") };
+                 imgEl: document.createElement("img"), tagEl: card.querySelector(".tag"),
+                 histEl: card.querySelector(".histbox canvas"),
+                 clipL: card.querySelector(".clipL"), clipR: card.querySelector(".clipR") };
     items.push(it);
     box.appendChild(it.imgEl);
     await develop(it);
     box.querySelector(".spin")?.remove();
 
     const setTag = () => it.tagEl.textContent =
-      it.picking ? "TAP A BLANK FILM EDGE" : it.showingNeg ? "NEGATIVE" : "POSITIVE";
+      it.picking ? "TAP A BLANK FILM EDGE" :
+      it.healing ? "TAP DUST TO HEAL" :
+      it.showingNeg ? "NEGATIVE" : "POSITIVE";
+    it.setTag = setTag;
     const toggle = () => {
       it.showingNeg = !it.showingNeg;
       it.imgEl.src = it.showingNeg ? it.negUrl : it.url;
       setTag();
     };
-    it.imgEl.onclick = e => { it.picking ? pickBase(it, e) : toggle(); };
-    card.querySelector(".cmp").onclick = toggle;
-    card.querySelector(".rot").onclick = async () => { it.rot = (it.rot + 90) % 360; await develop(it); };
-    card.querySelector(".mir").onclick = async () => { it.mirror = !it.mirror; await develop(it); };
-    card.querySelector(".save").onclick = () => saveItem(it);
+    const exitModes = () => {
+      it.picking = it.healing = false;
+      card.classList.remove("picking");
+      healBtn.classList.remove("on");
+      setTag();
+    };
+    it.imgEl.onclick = e => {
+      if (it.cropping) return;
+      if (it.picking) return pickBase(it, e);
+      if (it.healing) return addHeal(it, e);
+      toggle();
+    };
+    card.querySelector(".cmp").onclick = () => { if (!it.cropping) toggle(); };
+    card.querySelector(".rot").onclick = async () => {
+      if (it.cropping) return; it.rot = (it.rot + 90) % 360; await develop(it); };
+    card.querySelector(".mir").onclick = async () => {
+      if (it.cropping) return; it.mirror = !it.mirror; await develop(it); };
     card.querySelector(".del").onclick = () => removeItem(it);
-    const baseBtn = card.querySelector(".basebtn");
+    card.querySelector(".save").onclick = () => { if (!it.cropping) saveItem(it); };
+    card.querySelector(".share").onclick = () => {
+      if (!it.cropping) shareItem(it, card.querySelector(".share")); };
+
+    const autoBtn = card.querySelector(".auto");
+    autoBtn.onclick = async () => {
+      if (it.cropping) return;
+      if (it.cropRect) {
+        it.cropRect = null; it.cropSource = null;
+      } else {
+        const rect = detectFrame(it.bmp);
+        if (!rect) {
+          autoBtn.textContent = "no frame?";
+          setTimeout(() => syncCropButtons(it), 1600);
+          return;
+        }
+        it.cropRect = rect; it.cropSource = "auto";
+      }
+      syncCropButtons(it);
+      await develop(it);
+    };
+    card.querySelector(".cropbtn").onclick = () => {
+      if (it.cropping) return;
+      exitModes();
+      enterCrop(it);
+    };
+
+    const baseBtn = it.baseBtn = card.querySelector(".basebtn");
     baseBtn.onclick = async () => {
-      if (it.base && !it.picking) {            // clear override -> auto
+      if (it.cropping) return;
+      if (it.base && !it.picking) {
         it.base = null;
         baseBtn.textContent = "Base"; baseBtn.classList.remove("on");
         await develop(it);
         return;
       }
-      it.picking = !it.picking;
+      const was = it.picking;
+      exitModes();
+      it.picking = !was;
       card.classList.toggle("picking", it.picking);
-      if (it.picking && !it.showingNeg) toggle();   // show negative to tap its edge
+      if (it.picking && !it.showingNeg) toggle();
       setTag();
     };
-    it.setTag = setTag; it.baseBtn = baseBtn;
+
+    const healBtn = it.healBtn = card.querySelector(".heal");
+    healBtn.onclick = () => {
+      if (it.cropping) return;
+      const was = it.healing;
+      exitModes();
+      it.healing = !was;
+      card.classList.toggle("picking", it.healing);
+      healBtn.classList.toggle("on", it.healing);
+      if (it.healing && it.showingNeg) toggle();
+      setTag();
+    };
+    card.querySelector(".undo").onclick = async () => {
+      if (!it.spots.length) return;
+      it.spots.pop();
+      healBtn.textContent = it.spots.length ? "Heal·" + it.spots.length : "Heal";
+      await develop(it);
+    };
+
+    const ev = card.querySelector(".evctl input");
+    const evOut = card.querySelector(".evctl output");
+    ev.addEventListener("input", () => evOut.textContent = (+ev.value).toFixed(1));
+    ev.addEventListener("change", async () => { it.exp = +ev.value; await develop(it); });
   } catch (err) {
     box.querySelector(".spin").textContent = "couldn't read this image";
   }
 }
 
+const itemParams = it => { const P = params(); P.exposure += it.exp; return P; };
+
 async function pickBase(it, e) {
   const r = it.imgEl.getBoundingClientRect();
   const fx = (e.clientX - r.left) / r.width, fy = (e.clientY - r.top) / r.height;
-  const cv = statsCanvas(it, params());
+  const cv = statsCanvas(it, itemParams(it));
   const x = Math.min(cv.width - 1, Math.max(0, Math.round(fx * cv.width)));
   const y = Math.min(cv.height - 1, Math.max(0, Math.round(fy * cv.height)));
   const ctx = cv.getContext("2d", { willReadFrequently: true });
@@ -355,10 +643,130 @@ async function pickBase(it, e) {
   it.picking = false;
   it.card.classList.remove("picking");
   it.baseBtn.textContent = "Base ✓"; it.baseBtn.classList.add("on");
-  if (it.showingNeg) { it.showingNeg = false; }
+  it.showingNeg = false;
   await develop(it);
-  it.imgEl.src = it.url;
   it.setTag();
+}
+
+/* ---------------- manual crop editor ---------------- */
+async function enterCrop(it) {
+  it.cropping = true;
+  it.card.classList.add("picking");
+  it.tagEl.textContent = "ADJUST CROP";
+  // show the full, uncropped negative to crop over
+  const negCv = drawOriented(it.bmp, { l: 0, t: 0, r: 0, b: 0 }, it.rot, it.mirror, PREVIEW_DIM);
+  const blob = await new Promise(r => negCv.toBlob(r, "image/jpeg", 0.85));
+  it.cropTmpUrl = URL.createObjectURL(blob);
+  it.imgEl.src = it.cropTmpUrl;
+
+  // initial box: current effective insets mapped into view space
+  const ins = effIns(it, params());
+  const [ax, ay] = srcToView(ins.l, ins.t, it.rot, it.mirror);
+  const [bx, by] = srcToView(1 - ins.r, 1 - ins.b, it.rot, it.mirror);
+  const box = { x0: Math.min(ax, bx), y0: Math.min(ay, by),
+                x1: Math.max(ax, bx), y1: Math.max(ay, by) };
+  if (box.x1 - box.x0 < 0.05) { box.x0 = 0.02; box.x1 = 0.98; }
+  if (box.y1 - box.y0 < 0.05) { box.y0 = 0.02; box.y1 = 0.98; }
+
+  const ov = document.createElement("div");
+  ov.className = "cropov";
+  ov.innerHTML = `
+    <div class="cbox">
+      <div class="h tl"></div><div class="h tr"></div>
+      <div class="h bl"></div><div class="h br"></div>
+    </div>
+    <div class="ctools">
+      <button class="btn small cdone">Done</button>
+      <button class="btn small ghost cclear">No crop</button>
+      <button class="btn small ghost ccancel">Cancel</button>
+    </div>`;
+  it.card.querySelector(".imgbox").appendChild(ov);
+  const cbox = ov.querySelector(".cbox");
+  const render = () => {
+    cbox.style.left = box.x0 * 100 + "%";
+    cbox.style.top = box.y0 * 100 + "%";
+    cbox.style.width = (box.x1 - box.x0) * 100 + "%";
+    cbox.style.height = (box.y1 - box.y0) * 100 + "%";
+  };
+  render();
+
+  const MIN = 0.08;
+  let drag = null;   // {mode:'tl'|'tr'|'bl'|'br'|'move', startX,startY, snapshot}
+  ov.addEventListener("pointerdown", e => {
+    const t = e.target;
+    const mode = t.classList.contains("tl") ? "tl" : t.classList.contains("tr") ? "tr" :
+                 t.classList.contains("bl") ? "bl" : t.classList.contains("br") ? "br" :
+                 t === cbox ? "move" : null;
+    if (!mode) return;
+    e.preventDefault();
+    ov.setPointerCapture(e.pointerId);
+    const r = ov.getBoundingClientRect();
+    drag = { mode, r, sx: (e.clientX - r.left) / r.width, sy: (e.clientY - r.top) / r.height,
+             snap: { ...box } };
+  });
+  ov.addEventListener("pointermove", e => {
+    if (!drag) return;
+    const dx = (e.clientX - drag.r.left) / drag.r.width - drag.sx;
+    const dy = (e.clientY - drag.r.top) / drag.r.height - drag.sy;
+    const s = drag.snap, m = drag.mode;
+    const cl = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+    if (m === "move") {
+      const w = s.x1 - s.x0, h = s.y1 - s.y0;
+      box.x0 = cl(s.x0 + dx, 0, 1 - w); box.x1 = box.x0 + w;
+      box.y0 = cl(s.y0 + dy, 0, 1 - h); box.y1 = box.y0 + h;
+    } else {
+      if (m === "tl" || m === "bl") box.x0 = cl(s.x0 + dx, 0, s.x1 - MIN);
+      if (m === "tr" || m === "br") box.x1 = cl(s.x1 + dx, s.x0 + MIN, 1);
+      if (m === "tl" || m === "tr") box.y0 = cl(s.y0 + dy, 0, s.y1 - MIN);
+      if (m === "bl" || m === "br") box.y1 = cl(s.y1 + dy, s.y0 + MIN, 1);
+    }
+    render();
+  });
+  const endDrag = () => drag = null;
+  ov.addEventListener("pointerup", endDrag);
+  ov.addEventListener("pointercancel", endDrag);
+
+  const exit = async () => {
+    it.cropping = false;
+    it.card.classList.remove("picking");
+    ov.remove();
+    if (it.cropTmpUrl) { URL.revokeObjectURL(it.cropTmpUrl); it.cropTmpUrl = null; }
+    it.showingNeg = false;
+    await develop(it);
+    it.setTag();
+    syncCropButtons(it);
+  };
+  ov.querySelector(".cdone").onclick = async () => {
+    const [ax2, ay2] = viewToSrc(box.x0, box.y0, it.rot, it.mirror);
+    const [bx2, by2] = viewToSrc(box.x1, box.y1, it.rot, it.mirror);
+    const cl01 = v => Math.min(0.98, Math.max(0, v));
+    it.cropRect = { l: cl01(Math.min(ax2, bx2)), r: cl01(1 - Math.max(ax2, bx2)),
+                    t: cl01(Math.min(ay2, by2)), b: cl01(1 - Math.max(ay2, by2)) };
+    it.cropSource = "manual";
+    await exit();
+  };
+  ov.querySelector(".cclear").onclick = async () => {
+    it.cropRect = null; it.cropSource = null;
+    await exit();
+  };
+  ov.querySelector(".ccancel").onclick = exit;
+}
+
+function syncCropButtons(it) {
+  const autoBtn = it.card.querySelector(".auto");
+  const cropBtn = it.card.querySelector(".cropbtn");
+  autoBtn.textContent = it.cropSource === "auto" ? "Auto ✓" : "Auto";
+  autoBtn.classList.toggle("on", it.cropSource === "auto");
+  cropBtn.textContent = it.cropSource === "manual" ? "Crop ✓" : "Crop";
+  cropBtn.classList.toggle("on", it.cropSource === "manual");
+}
+
+async function addHeal(it, e) {
+  const r = it.imgEl.getBoundingClientRect();
+  it.spots.push({ fx: (e.clientX - r.left) / r.width,
+                  fy: (e.clientY - r.top) / r.height, r: 0.012 });
+  it.healBtn.textContent = "Heal·" + it.spots.length;
+  await develop(it);           // stay in heal mode for more taps
 }
 
 function removeItem(it) {
@@ -372,17 +780,17 @@ function removeItem(it) {
 
 async function develop(it) {
   await new Promise(r => setTimeout(r));            // let UI breathe
-  const P = params();
-  const cv = convert(it, P, PREVIEW_DIM);
+  const P = itemParams(it);
+  const { cv, img } = convert(it, P, PREVIEW_DIM);
   const blob = await new Promise(r => cv.toBlob(r, "image/jpeg", 0.9));
   if (it.url) URL.revokeObjectURL(it.url);
   it.url = URL.createObjectURL(blob);
-  // negative preview with matching crop/orientation so Compare lines up
-  const negCv = drawOriented(it.bmp, P.crop, it.rot, it.mirror, PREVIEW_DIM);
+  const negCv = drawOriented(it.bmp, effIns(it, P), it.rot, it.mirror, PREVIEW_DIM);
   const negBlob = await new Promise(r => negCv.toBlob(r, "image/jpeg", 0.85));
   if (it.negUrl) URL.revokeObjectURL(it.negUrl);
   it.negUrl = URL.createObjectURL(negBlob);
   it.imgEl.src = it.showingNeg ? it.negUrl : it.url;
+  drawHist(it.histEl, img.data, it.clipL, it.clipR);
 }
 
 let developing = false;
@@ -392,14 +800,37 @@ async function redevelopAll() {
   developing = false;
 }
 
-async function saveItem(it) {
-  const cv = convert(it, params(), FULL_DIM);
-  const blob = await new Promise(r => cv.toBlob(r, "image/jpeg", 0.95));
+function download(blob, filename) {
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = it.name + "_positive.jpg";
+  a.download = filename;
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+}
+
+async function saveItem(it) {
+  const P = itemParams(it);
+  if (tiff) {
+    const { w, h, out } = convert16(it, P, FULL_DIM);
+    download(makeTiff(w, h, out), it.name + "_positive.tif");
+  } else {
+    const { cv } = convert(it, P, FULL_DIM);
+    const blob = await new Promise(r => cv.toBlob(r, "image/jpeg", 0.95));
+    download(blob, it.name + "_positive.jpg");
+  }
+}
+
+async function shareItem(it, btn) {
+  const { cv } = convert(it, itemParams(it), FULL_DIM);
+  const blob = await new Promise(r => cv.toBlob(r, "image/jpeg", 0.95));
+  const file = new File([blob], it.name + "_positive.jpg", { type: "image/jpeg" });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file] }); } catch (e) { /* user cancelled */ }
+  } else {
+    download(blob, it.name + "_positive.jpg");     // fallback where share unsupported
+    if (btn) { const t = btn.textContent; btn.textContent = "saved ↓";
+      setTimeout(() => btn.textContent = t, 1600); }
+  }
 }
 
 $("saveAllBtn").onclick = async () => {
