@@ -135,6 +135,8 @@
     <b>Crop</b> lets you drag the frame yourself (drag corners to resize, inside to move).
     <b>&#10227;</b> rotates, <b>&#8646;</b> mirrors.
     <b>Base</b>: tap it, then tap a blank orange film edge &mdash; pins the color correction (tap again for auto).
+    <b>WB</b>: tap it, then tap something that should be neutral (gray card, white wall,
+    pavement, clouds) &mdash; removes that frame&rsquo;s color cast (tap again to clear).
     <b>Heal</b>: tap it, then tap dust spots on the photo; <b>&#8617;</b> undoes the last spot.
     Set crop &amp; rotation before healing. The histogram shows shadow/highlight
     clipping percentages &mdash; they turn red above 1%.
@@ -173,7 +175,9 @@ const percentile = (sorted, p) => {
 function computeMaps(smallData, P, baseOverride) {
   const n = smallData.length >> 2;
   const CRUSH = S2L[2], BLACK_CLIP = 0.5, WHITE_CLIP = 0.5;
-  const gains = [Math.pow(2, P.temp * 0.5), Math.pow(2, -P.tint * 0.5), Math.pow(2, -P.temp * 0.5)];
+  const wb = P.wb || [1, 1, 1];            // per-frame white balance gains
+  const gains = [Math.pow(2, P.temp * 0.5) * wb[0], Math.pow(2, -P.tint * 0.5) * wb[1],
+                 Math.pow(2, -P.temp * 0.5) * wb[2]];
   const m8 = [], m16 = [];
   for (let c = 0; c < 3; c++) {
     const lin = new Float32Array(n);
@@ -498,6 +502,7 @@ async function addItem(file) {
       <button class="btn small ghost rot" title="Rotate">&#10227;</button>
       <button class="btn small ghost mir" title="Mirror">&#8646;</button>
       <button class="btn small ghost basebtn">Base</button>
+      <button class="btn small ghost wbbtn">WB</button>
       <button class="btn small ghost heal">Heal</button>
       <button class="btn small ghost undo" title="Undo heal">&#8617;</button>
       <button class="btn small ghost cmp">Compare</button>
@@ -517,6 +522,7 @@ async function addItem(file) {
                  rot: 0, mirror: false, base: null, cropRect: null,
                  cropSource: null, cropping: false, cropTmpUrl: null,
                  exp: 0, spots: [], picking: false, healing: false,
+                 wb: null, wbPicking: false,
                  url: null, negUrl: null, showingNeg: false,
                  imgEl: document.createElement("img"), tagEl: card.querySelector(".tag"),
                  histEl: card.querySelector(".histbox canvas"),
@@ -528,6 +534,7 @@ async function addItem(file) {
 
     const setTag = () => it.tagEl.textContent =
       it.picking ? "TAP A BLANK FILM EDGE" :
+      it.wbPicking ? "TAP SOMETHING NEUTRAL GRAY / WHITE" :
       it.healing ? "TAP DUST TO HEAL" :
       it.showingNeg ? "NEGATIVE" : "POSITIVE";
     it.setTag = setTag;
@@ -537,7 +544,7 @@ async function addItem(file) {
       setTag();
     };
     const exitModes = () => {
-      it.picking = it.healing = false;
+      it.picking = it.healing = it.wbPicking = false;
       card.classList.remove("picking");
       healBtn.classList.remove("on");
       setTag();
@@ -545,6 +552,7 @@ async function addItem(file) {
     it.imgEl.onclick = e => {
       if (it.cropping) return;
       if (it.picking) return pickBase(it, e);
+      if (it.wbPicking) return pickWB(it, e);
       if (it.healing) return addHeal(it, e);
       toggle();
     };
@@ -598,6 +606,23 @@ async function addItem(file) {
       setTag();
     };
 
+    const wbBtn = it.wbBtn = card.querySelector(".wbbtn");
+    wbBtn.onclick = async () => {
+      if (it.cropping) return;
+      if (it.wb && !it.wbPicking) {            // clear custom white balance
+        it.wb = null;
+        wbBtn.textContent = "WB"; wbBtn.classList.remove("on");
+        await develop(it);
+        return;
+      }
+      const was = it.wbPicking;
+      exitModes();
+      it.wbPicking = !was;
+      card.classList.toggle("picking", it.wbPicking);
+      if (it.wbPicking && it.showingNeg) toggle();   // pick on the positive
+      setTag();
+    };
+
     const healBtn = it.healBtn = card.querySelector(".heal");
     healBtn.onclick = () => {
       if (it.cropping) return;
@@ -625,7 +650,47 @@ async function addItem(file) {
   }
 }
 
-const itemParams = it => { const P = params(); P.exposure += it.exp; return P; };
+const itemParams = it => { const P = params(); P.exposure += it.exp; P.wb = it.wb; return P; };
+
+/* White-balance eyedropper: find per-channel gains that make the tapped
+   patch neutral. Iterates because gains act before the tone curve. */
+async function pickWB(it, e) {
+  const r = it.imgEl.getBoundingClientRect();
+  const fx = (e.clientX - r.left) / r.width, fy = (e.clientY - r.top) / r.height;
+  const sample = wb => {
+    const P = itemParams(it); P.wb = wb; P.saturation = 1; P.bw = false;
+    const { img } = convert(it, P, 600);
+    const w = img.width, h = img.height, d = img.data;
+    const cx = Math.round(fx * (w - 1)), cy = Math.round(fy * (h - 1));
+    const acc = [0, 0, 0], raw = [0, 0, 0]; let n = 0;
+    for (let y = Math.max(0, cy - 3); y <= Math.min(h - 1, cy + 3); y++)
+      for (let x = Math.max(0, cx - 3); x <= Math.min(w - 1, cx + 3); x++) {
+        const i = (y * w + x) * 4;
+        for (let c = 0; c < 3; c++) { acc[c] += S2L[d[i + c]]; raw[c] += d[i + c]; }
+        n++;
+      }
+    return { lin: acc.map(v => v / n), raw: raw.map(v => v / n) };
+  };
+  let wb = [1, 1, 1];
+  const first = sample(wb);
+  if (Math.max(...first.raw) > 248 || Math.min(...first.raw) < 6) {
+    it.tagEl.textContent = "TOO BRIGHT/DARK — PICK A MID GRAY";
+    return;                                  // stay in pick mode
+  }
+  let s = first;
+  for (let iter = 0; iter < 5; iter++) {
+    const mean = (s.lin[0] + s.lin[1] + s.lin[2]) / 3;
+    wb = wb.map((g, c) => Math.min(8, Math.max(1 / 8, g * mean / Math.max(s.lin[c], 1e-5))));
+    s = sample(wb);
+  }
+  const gm = Math.cbrt(wb[0] * wb[1] * wb[2]);   // keep overall brightness
+  it.wb = wb.map(g => g / gm);
+  it.wbPicking = false;
+  it.card.classList.remove("picking");
+  it.wbBtn.textContent = "WB ✓"; it.wbBtn.classList.add("on");
+  await develop(it);
+  it.setTag();
+}
 
 async function pickBase(it, e) {
   const r = it.imgEl.getBoundingClientRect();
